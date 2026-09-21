@@ -28,6 +28,15 @@ Please include as much of the information listed below as you can to help us bet
 
 This information will help us triage your report more quickly.
 
+## Issues Requiring Broker Control
+
+If exploitation requires a malicious or compromised broker, explain the additional impact beyond what that broker can
+already cause through normal MQTT traffic. For example, memory use from a large `CONNACK` may not represent an additional
+risk if a large `PUBLISH` can cause the same effect under equivalent conditions and configured limits.
+
+Bypassing intended limits, disproportionate resource use, or crossing other trust boundaries may still be security
+relevant. If in doubt, use the confidential reporting process above.
+
 ## Supported Versions
 
 Only the most recent release of the client will be supported with security updates.
