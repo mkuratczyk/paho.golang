@@ -304,11 +304,7 @@ func ReadPacket(r io.Reader) (*ControlPacket, error) {
 		cp.Content.(*Publish).Duplicate = cp.Flags&(1<<3) != 0
 		cp.Content.(*Publish).Retain = cp.Flags&1 != 0
 	}
-	vbi, err := getVBI(r)
-	if err != nil {
-		return nil, err
-	}
-	cp.remainingLength, err = decodeVBI(vbi)
+	cp.remainingLength, err = readVBI(r)
 	if err != nil {
 		return nil, err
 	}
@@ -412,23 +408,26 @@ func encodeVBIdirect(length int, buf *bytes.Buffer) error {
 	}
 }
 
-// getVBI - retrieves Variable Byte Integer from reader (as per spec clause 1.5.5)
-func getVBI(r io.Reader) (*bytes.Buffer, error) {
-	var ret bytes.Buffer
+// readVBI reads and decodes a Variable Byte Integer directly from r (as per spec
+// clause 1.5.5), avoiding allocations.
+func readVBI(r io.Reader) (int, error) {
+	var vbi uint32
+	var multiplier uint32
 	digit := [1]byte{}
 	for {
-		_, err := io.ReadFull(r, digit[:])
-		if err != nil {
-			return nil, err
+		if _, err := io.ReadFull(r, digit[:]); err != nil {
+			return 0, err
 		}
-		ret.WriteByte(digit[0])
-		if digit[0] <= 0x7f {
-			return &ret, nil
+		vbi |= uint32(digit[0]&127) << multiplier
+		if digit[0]&128 == 0 {
+			break
 		}
-		if ret.Len() > 3 { // Max bytes in length is 4, 4th byte must hot have high bit set
-			return nil, errors.New("malformed Variable Byte Integer")
+		multiplier += 7
+		if multiplier >= 27 { // Max bytes in length is 4, 4th byte must not have high bit set
+			return 0, errors.New("malformed Variable Byte Integer")
 		}
 	}
+	return int(vbi), nil
 }
 
 // decodeVBI - Variable Byte Integer as per spec clause 1.5.5

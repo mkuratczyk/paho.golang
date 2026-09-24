@@ -146,7 +146,7 @@ func TestDecodeVBIMaxPlus1(t *testing.T) {
 	require.Error(t, err)
 }
 func TestDecodeGetVBIMaxPlus1(t *testing.T) {
-	_, err := getVBI(bytes.NewBuffer([]byte{0xff, 0xff, 0xff, 0x80}))
+	_, err := readVBI(bytes.NewBuffer([]byte{0xff, 0xff, 0xff, 0x80}))
 	require.ErrorContains(t, err, "malformed Variable Byte Integer")
 }
 func TestNewControlPacketConnect(t *testing.T) {

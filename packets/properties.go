@@ -583,11 +583,7 @@ func (i *Properties) PackBuf(p byte) (*bytes.Buffer, error) {
 // filling in the appropriate entries in the struct, it returns the number
 // of bytes used to store the Prop data and any error in decoding them
 func (i *Properties) Unpack(r *bytes.Buffer, p byte) error {
-	vbi, err := getVBI(r)
-	if err != nil {
-		return err
-	}
-	size, err := decodeVBI(vbi)
+	size, err := readVBI(r)
 	if err != nil {
 		return err
 	}
