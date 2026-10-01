@@ -75,3 +75,39 @@ func TestPublishPackUnpack(t *testing.T) {
 		}
 	}
 }
+
+// TestPublishUnpackPayloadIsolated checks that the decoded payload is an exactly
+// sized copy: it must not alias the buffer it was decoded from, and appending to
+// it must not touch anything else.
+func TestPublishUnpackPayloadIsolated(t *testing.T) {
+	for _, size := range []int{0, 1, 12, 600, 70000} {
+		want := bytes.Repeat([]byte{0xAB}, size)
+		src := &Publish{Topic: "t", Payload: want, Properties: &Properties{}}
+		var wire bytes.Buffer
+		if _, err := src.WriteTo(&wire); err != nil {
+			t.Fatalf("size %d: %v", size, err)
+		}
+		raw := wire.Bytes()
+
+		cp, err := ReadPacket(bytes.NewReader(raw))
+		if err != nil {
+			t.Fatalf("size %d: %v", size, err)
+		}
+		got := cp.Content.(*Publish).Payload
+		if got == nil {
+			t.Fatalf("size %d: payload is nil, want an empty non-nil slice", size)
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("size %d: payload mismatch", size)
+		}
+		if cap(got) != len(got) {
+			t.Errorf("size %d: cap %d, want %d", size, cap(got), len(got))
+		}
+		for i := range raw {
+			raw[i] = 0
+		}
+		if !bytes.Equal(got, want) {
+			t.Errorf("size %d: payload changed when the source buffer was overwritten", size)
+		}
+	}
+}

@@ -19,7 +19,6 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net"
 )
 
@@ -67,10 +66,11 @@ func (p *Publish) Unpack(r *bytes.Buffer) error {
 		return err
 	}
 
-	p.Payload, err = ioutil.ReadAll(r)
-	if err != nil {
-		return err
-	}
+	// Everything left in r is the payload and its size is known, so copy it into
+	// an exactly sized slice. ioutil.ReadAll starts with a 512 byte buffer, which
+	// dominates the cost of decoding small messages.
+	p.Payload = make([]byte, r.Len())
+	copy(p.Payload, r.Bytes())
 
 	return nil
 }
