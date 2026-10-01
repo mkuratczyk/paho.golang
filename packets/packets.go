@@ -537,6 +537,19 @@ func readBinary(b *bytes.Buffer) ([]byte, error) {
 }
 
 func readString(b *bytes.Buffer) (string, error) {
-	s, err := readBinary(b)
-	return string(s), err
+	size, err := readUint16(b)
+	if err != nil {
+		return "", err
+	}
+	// Convert straight from the buffer: going through readBinary would allocate
+	// a []byte only to copy it again into the string.
+	n := int(size)
+	if b.Len() < n {
+		// Same errors io.ReadFull reports, so callers see no difference.
+		if b.Len() == 0 {
+			return "", io.EOF
+		}
+		return "", io.ErrUnexpectedEOF
+	}
+	return string(b.Next(n)), nil
 }

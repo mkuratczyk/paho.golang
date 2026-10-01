@@ -197,6 +197,33 @@ func TestReadStringWriteString(t *testing.T) {
 	assert.Equal(t, 65537, b.Len()) // Two byte length so 65535 + 2 = 65537
 }
 
+// TestReadStringTruncated checks that readString reports the same errors as
+// readBinary (which reads with io.ReadFull) for truncated input, and that a
+// failed read of a well-formed prefix still leaves following fields intact.
+func TestReadStringTruncated(t *testing.T) {
+	for name, in := range map[string][]byte{
+		"empty":                 {},
+		"half a length":         {0x00},
+		"length without data":   {0x00, 0x03},
+		"length with some data": {0x00, 0x03, 'a', 'b'},
+	} {
+		_, wantErr := readBinary(bytes.NewBuffer(append([]byte(nil), in...)))
+		_, err := readString(bytes.NewBuffer(append([]byte(nil), in...)))
+		require.Error(t, err, name)
+		assert.Equal(t, wantErr, err, name)
+	}
+
+	// An empty string and a string followed by more data.
+	b := bytes.NewBuffer([]byte{0x00, 0x00, 0x00, 0x02, 'h', 'i', 0xFF})
+	s, err := readString(b)
+	require.NoError(t, err)
+	assert.Equal(t, "", s)
+	s, err = readString(b)
+	require.NoError(t, err)
+	assert.Equal(t, "hi", s)
+	assert.Equal(t, []byte{0xFF}, b.Bytes())
+}
+
 func TestReadStringWriteBinary(t *testing.T) {
 	var b bytes.Buffer
 	const test1 = "Test string 世界" // include unicode
