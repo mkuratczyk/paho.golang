@@ -158,3 +158,10 @@ transmitted when possible. By default, this queue is held in memory but you can 
 
 See `examples/queue`.
 
+Applications using only `ConnectionManager.Publish` can set
+`ClientConfig.DisablePublishQueue` to `true`. This avoids allocating the default
+in-memory queue and starting a queue worker for each connection manager.
+`PublishViaQueue` then returns `ErrPublishQueueDisabled`. Direct publishing,
+automatic reconnection, and session management continue to work normally.
+Setting both `DisablePublishQueue` and a custom `Queue` is rejected by
+`NewConnection`.

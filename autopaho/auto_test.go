@@ -29,6 +29,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/eclipse/paho.golang/autopaho/queue/memory"
 	"github.com/eclipse/paho.golang/internal/testserver"
 	"github.com/eclipse/paho.golang/packets"
 	paholog "github.com/eclipse/paho.golang/paho/log"
@@ -733,4 +734,140 @@ func ExampleClientConfig_ConnectPacketBuilder() {
 	cp, _ := config.buildConnectPacket(false, serverURL)
 	fmt.Printf("user: %s, pass: %s", cp.Username, string(cp.Password))
 	// Output: user: mqtt_user, pass: mqtt_pass
+}
+
+// AI Disclosure: OpenAI Codex (GPT-6) assisted with the optional queue tests.
+func TestDisablePublishQueueRejectsCustomQueue(t *testing.T) {
+	serverURL, _ := url.Parse(dummyURL)
+	cm, err := NewConnection(t.Context(), ClientConfig{
+		ServerUrls:          []*url.URL{serverURL},
+		DisablePublishQueue: true,
+		Queue:               memory.New(),
+	})
+	if err == nil || cm != nil {
+		t.Fatalf("got manager %v, error %v; want invalid configuration error", cm, err)
+	}
+}
+
+// AI Disclosure: OpenAI Codex (GPT-6) assisted with this lifecycle regression test.
+func TestPublishQueueModesDirectPublishAndReconnect(t *testing.T) {
+	for _, disabled := range []bool{false, true} {
+		t.Run(fmt.Sprintf("disabled=%t", disabled), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(context.Background())
+				defer func() { cancel(); synctest.Wait() }()
+				serverURL, _ := url.Parse(dummyURL)
+				server := testserver.New(paholog.NewTestLogger(t, "server:"))
+				cleanStarts := make(chan bool, 2)
+				server.SetConnectCallback(func(cp *packets.Connect, _ *packets.Connack) {
+					cleanStarts <- cp.CleanStart
+				})
+				connected := make(chan error, 2)
+				serverDones := make(chan chan struct{}, 8)
+				received := make(chan *paho.Publish, 4)
+				cm, err := NewConnection(ctx, ClientConfig{
+					ServerUrls:                    []*url.URL{serverURL},
+					DisablePublishQueue:           disabled,
+					CleanStartOnInitialConnection: true,
+					SessionExpiryInterval:         60,
+					ReconnectBackoff:              NewConstantBackoff(time.Millisecond),
+					ConnectTimeout:                time.Second,
+					AttemptConnection: func(ctx context.Context, _ ClientConfig, _ *url.URL) (net.Conn, error) {
+						conn, done, err := server.Connect(ctx)
+						if err == nil {
+							serverDones <- done
+						}
+						return conn, err
+					},
+					OnConnectionUp: func(cm *ConnectionManager, _ *paho.Connack) {
+						_, err := cm.Subscribe(ctx, &paho.Subscribe{Subscriptions: []paho.SubscribeOptions{{Topic: "queue-mode", QoS: 2}}})
+						connected <- err
+					},
+					ClientConfig: paho.ClientConfig{
+						ClientID: "queue-mode",
+						OnPublishReceived: []func(paho.PublishReceived) (bool, error){
+							func(pr paho.PublishReceived) (bool, error) { received <- pr.Packet; return true, nil },
+						},
+					},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					cancel()
+					<-cm.Done()
+					for {
+						select {
+						case done := <-serverDones:
+							<-done
+						default:
+							return
+						}
+					}
+				}()
+				awaitConnection := func() {
+					t.Helper()
+					select {
+					case err := <-connected:
+						if err != nil {
+							t.Fatal(err)
+						}
+					case <-time.After(time.Second):
+						t.Fatal("connection/subscription timed out")
+					}
+					synctest.Wait()
+				}
+				awaitMessage := func(want string) {
+					t.Helper()
+					select {
+					case msg := <-received:
+						if string(msg.Payload) != want {
+							t.Fatalf("got %q, want %q", msg.Payload, want)
+						}
+					case <-time.After(time.Second):
+						t.Fatal("direct or queued message was not received")
+					}
+				}
+				awaitConnection()
+				if !<-cleanStarts {
+					t.Fatal("initial connection did not use clean start")
+				}
+				if (cm.queue == nil) != disabled {
+					t.Fatal("queue allocation did not match configuration")
+				}
+				for qos := byte(0); qos <= 2; qos++ {
+					body := fmt.Sprintf("qos-%d", qos)
+					if _, err := cm.Publish(ctx, &paho.Publish{Topic: "queue-mode", QoS: qos, Payload: []byte(body)}); err != nil {
+						t.Fatal(err)
+					}
+					awaitMessage(body)
+				}
+				if disabled {
+					if err := cm.PublishViaQueue(ctx, nil); !errors.Is(err, ErrPublishQueueDisabled) {
+						t.Fatalf("got %v, want ErrPublishQueueDisabled", err)
+					}
+				} else {
+					if err := cm.PublishViaQueue(ctx, &QueuePublish{Publish: &paho.Publish{Topic: "queue-mode", Payload: []byte("queued")}}); err != nil {
+						t.Fatal(err)
+					}
+					awaitMessage("queued")
+				}
+				cm.TerminateConnectionForTest()
+				awaitConnection()
+				if <-cleanStarts {
+					t.Fatal("reconnection incorrectly used initial clean start")
+				}
+				if _, err := cm.Publish(ctx, &paho.Publish{Topic: "queue-mode", QoS: 1, Payload: []byte("reconnected")}); err != nil {
+					t.Fatal(err)
+				}
+				awaitMessage("reconnected")
+				cancel()
+				select {
+				case <-cm.Done():
+				case <-time.After(time.Second):
+					t.Fatal("connection manager did not shut down")
+				}
+			})
+		})
+	}
 }

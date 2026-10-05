@@ -50,6 +50,10 @@ import (
 // request is made).
 var ConnectionDownError = errors.New("connection with the MQTT server is currently down")
 
+// ErrPublishQueueDisabled is returned by PublishViaQueue when the connection
+// manager was created with DisablePublishQueue set to true.
+var ErrPublishQueueDisabled = errors.New("publish queue is disabled")
+
 // WebSocketConfig enables customisation of the websocket connection
 type WebSocketConfig struct {
 	Dialer func(url *url.URL, tlsCfg *tls.Config) *websocket.Dialer // If non-nil this will be called before each websocket connection (allows full configuration of the dialer used)
@@ -76,7 +80,13 @@ type ClientConfig struct {
 	ConnectTimeout    time.Duration           // How long to wait for the connection process to complete (defaults to 10s)
 	WebSocketCfg      *WebSocketConfig        // Enables customisation of the websocket connection
 
-	Queue queue.Queue // Used to queue up publish messages (if nil an error will be returned if publish could not be transmitted)
+	// Queue stores messages passed to PublishViaQueue. If nil, an in-memory
+	// queue is created unless DisablePublishQueue is true.
+	Queue queue.Queue
+	// DisablePublishQueue avoids creating the default queue and its worker.
+	// PublishViaQueue returns ErrPublishQueueDisabled; Publish is unaffected.
+	// Setting both DisablePublishQueue and Queue is an error.
+	DisablePublishQueue bool
 
 	// Depreciated: Use ServerUrls instead (this will be used if ServerUrls is empty). Will be removed in a future release.
 	BrokerUrls []*url.URL
@@ -268,7 +278,10 @@ func NewConnection(ctx context.Context, cfg ClientConfig) (*ConnectionManager, e
 	if len(cfg.ServerUrls) == 0 { // This would cause an infinite loop
 		return nil, errors.New("no server urls provided")
 	}
-	if cfg.Queue == nil {
+	if cfg.DisablePublishQueue && cfg.Queue != nil {
+		return nil, errors.New("DisablePublishQueue and Queue cannot both be set")
+	}
+	if !cfg.DisablePublishQueue && cfg.Queue == nil {
 		cfg.Queue = memory.New()
 	}
 	if cfg.Session == nil { // Must create this, or it will be recreated upon reconnection, and we will lose the session info
@@ -326,11 +339,13 @@ func NewConnection(ctx context.Context, cfg ClientConfig) (*ConnectionManager, e
 			}
 
 			if firstConnection {
-				c.queueWg.Add(1)
-				go func(ctx context.Context) {
-					_ = c.managePublishQueue(ctx)
-					c.queueWg.Done()
-				}(innerCtx)
+				if c.queue != nil {
+					c.queueWg.Add(1)
+					go func(ctx context.Context) {
+						_ = c.managePublishQueue(ctx)
+						c.queueWg.Done()
+					}(innerCtx)
+				}
 				firstConnection = false
 			}
 
@@ -480,6 +495,7 @@ type QueuePublish struct {
 // PublishViaQueue is used to send a publication to the MQTT server via a queue (by default memory based).
 // An error will be returned if the message could not be added to the queue, otherwise the message will be delivered
 // in the background with no status updates available.
+// If ClientConfig.DisablePublishQueue is true, ErrPublishQueueDisabled is returned.
 // Use this function when you wish to rely upon the libraries best-effort to transmit the message; it is anticipated
 // that this will generally be in situations where the network link or power supply is unreliable.
 // Messages will be written to a queue (configuring a disk-based queue is recommended) and transmitted where possible.
@@ -489,6 +505,9 @@ type QueuePublish struct {
 //   - Set ClientConfig.Session to a session manager with persistent storage
 //   - Set ClientConfig.Queue to a queue with persistent storage
 func (c *ConnectionManager) PublishViaQueue(ctx context.Context, p *QueuePublish) error {
+	if c.queue == nil {
+		return ErrPublishQueueDisabled
+	}
 	var b bytes.Buffer
 	if _, err := p.Packet().WriteTo(&b); err != nil {
 		return err
